@@ -1,0 +1,63 @@
+# ============================================================
+#  docker-compose.yml
+#  Local Azure emulators for development.
+#
+#  Start:  docker compose up -d
+#  Stop:   docker compose down
+#  Wipe:   docker compose down -v   (removes persisted data)
+# ============================================================
+
+services:
+
+  # ── Azurite – Azure Storage emulator ──────────────────────
+  # Emulates Blob, Queue, and Table Storage locally.
+  # Connection string: UseDevelopmentStorage=true
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    container_name: restaurant-reviews-azurite
+    restart: unless-stopped
+    ports:
+      - "10000:10000"   # Blob service
+      - "10001:10001"   # Queue service
+      - "10002:10002"   # Table service
+    volumes:
+      - azurite-data:/data
+    command: >
+      azurite
+      --blobHost 0.0.0.0
+      --queueHost 0.0.0.0
+      --tableHost 0.0.0.0
+      --location /data
+      --debug /data/azurite-debug.log
+
+  # ── Cosmos DB Emulator – Linux preview build ───────────────
+  # Emulates Azure Cosmos DB for NoSQL locally.
+  # Data Explorer: https://localhost:8081/_explorer/index.html
+  # Well-known emulator key (not a real secret):
+  #   C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw==
+  #
+  # NOTE: The emulator uses a self-signed TLS cert. Set
+  #   NODE_TLS_REJECT_UNAUTHORIZED=0  in api/.env for local dev,
+  #   or trust the emulator cert explicitly.
+  cosmos-emulator:
+    image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:latest
+    container_name: restaurant-reviews-cosmos
+    restart: unless-stopped
+    mem_limit: 3g
+    ports:
+      - "8081:8081"     # Gateway / Data Explorer
+      - "10251:10251"   # Direct mode partition 1
+      - "10252:10252"   # Direct mode partition 2
+      - "10253:10253"   # Direct mode partition 3
+      - "10254:10254"   # Direct mode partition 4
+    environment:
+      AZURE_COSMOS_EMULATOR_PARTITION_COUNT: "10"
+      AZURE_COSMOS_EMULATOR_ENABLE_DATA_PERSISTENCE: "true"
+      # Override the IP the TLS cert is bound to so SDK connections work.
+      AZURE_COSMOS_EMULATOR_IP_ADDRESS_OVERRIDE: "127.0.0.1"
+    volumes:
+      - cosmos-data:/tmp/cosmos/appdata
+
+volumes:
+  azurite-data:
+  cosmos-data:

@@ -1,0 +1,43 @@
+# ── Dependencies ────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ── Build outputs ───────────────────────────────────────────
+dist/
+build/
+frontend/dist/
+api/dist/
+
+# ── Local secrets / environment ─────────────────────────────
+.env
+.env.local
+.env.*.local
+# Azure Functions local settings contain secrets – never commit
+api/local.settings.json
+
+# ── Azure Functions runtime artifacts ───────────────────────
+api/.azurefunctions/
+api/bin/
+api/obj/
+
+# ── OS / editor junk ────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.suo
+*.user
+.vscode/settings.json
+.idea/
+
+# ── Logs ────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Docker local volumes (if bind-mounted) ──────────────────
+.azurite/
+.cosmos/
+
+# ── TypeScript incremental build info ───────────────────────
+*.tsbuildinfo
