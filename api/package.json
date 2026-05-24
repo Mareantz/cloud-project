@@ -7,14 +7,22 @@
     "watch": "tsc --watch",
     "start": "func start",
     "dev": "npm run build && func start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "seed": "npm run build && node dist/src/shared/seed.js",
+    "init-azurite": "node scripts/init-azurite.js"
   },
   "main": "dist/src/index.js",
   "dependencies": {
-    "@azure/functions": "^4.6.0"
+    "@azure/cosmos": "^4.2.0",
+    "@azure/functions": "^4.6.0",
+    "@azure/storage-blob": "^12.25.0",
+    "@azure/storage-queue": "^12.25.0",
+    "applicationinsights": "^2.9.8",
+    "sharp": "^0.33.0"
   },
   "devDependencies": {
     "@types/node": "^20.17.9",
+    "azure-functions-core-tools": "^4.0.0",
     "typescript": "^5.5.3"
   }
 }

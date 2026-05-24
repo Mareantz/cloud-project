@@ -1,5 +1,13 @@
 // Entry point for the Azure Functions v4 app.
-// Import every function module here so the runtime discovers all registrations.
-// Add a new import line whenever you add a function under src/functions/.
+// This file intentionally only imports function modules so each module can
+// self-register via app.http(...) when the runtime loads.
 
 import './functions/health';
+import './functions/getRestaurants';
+import './functions/getRestaurantById';
+import './functions/createRestaurant';
+import './functions/getReviews';
+import './functions/createReview';
+import './functions/uploadPhoto';
+import './functions/generateThumbnail';
+import './functions/uploadReviewImage';

@@ -29,6 +29,7 @@ services:
       --tableHost 0.0.0.0
       --location /data
       --debug /data/azurite-debug.log
+      --skipApiVersionCheck
 
   # ── Cosmos DB Emulator – Linux preview build ───────────────
   # Emulates Azure Cosmos DB for NoSQL locally.

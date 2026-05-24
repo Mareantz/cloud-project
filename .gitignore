@@ -13,8 +13,11 @@ api/dist/
 .env
 .env.local
 .env.*.local
-# Azure Functions local settings contain secrets – never commit
-api/local.settings.json
+# api/local.settings.json is tracked intentionally – it contains only
+# emulator-safe defaults (Azurite, Cosmos DB emulator).
+# Any file that overrides it with real secrets MUST NOT be committed;
+# use the pattern below for such overrides.
+api/local.settings.*.json
 
 # ── Azure Functions runtime artifacts ───────────────────────
 api/.azurefunctions/

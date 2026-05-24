@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+
+    "appName": {
+      "value": "rr"
+    },
+
+    "location": {
+      "value": "australiaeast"
+    },
+
+    "cosmosDatabaseName": {
+      "value": "restaurant-reviews"
+    },
+
+    "cosmosContainerRestaurants": {
+      "value": "restaurants"
+    },
+
+    "cosmosContainerReviews": {
+      "value": "reviews"
+    },
+
+    "blobContainerImages": {
+      "value": "restaurant-images"
+    },
+
+    "blobContainerReviewImages": {
+      "value": "review-images"
+    },
+
+    "blobContainerReviewThumbnails": {
+      "value": "review-thumbnails"
+    },
+
+    "reviewImagesQueueName": {
+      "value": "review-image-processing"
+    },
+
+    "enableCosmosFreeTier": {
+      "value": false
+    }
+
+  }
+}

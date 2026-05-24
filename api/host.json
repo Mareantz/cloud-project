@@ -8,7 +8,33 @@
       }
     },
     "logLevel": {
-      "default": "Information"
+      // Keep default at Information so your own function logs remain visible.
+      "default": "Information",
+      // Silence the low-level Azure Storage / Queue SDK HTTP chatter
+      // (repeated GET/PUT requests Azurite logs on every poll cycle).
+      "Azure.Core": "Warning",
+      "Azure.Storage.Queues": "Warning",
+      // Suppress the Azure WebJobs host-level queue polling diagnostics
+      // ("No messages found", listener heartbeats, etc.).
+      "Host.Triggers.Queue": "Warning",
+      "Microsoft.Azure.WebJobs.Host": "Warning",
+      "Microsoft.Azure.WebJobs.Extensions.Storage": "Warning"
+    }
+  },
+  // Queue extension tuning — reduces how aggressively the trigger polls
+  // Azurite when the queue is empty (local dev idle state).
+  "extensions": {
+    "queues": {
+      // Back off up to 30 s between polls on an empty queue (default: 00:01:00).
+      // The runtime uses exponential back-off, so the first empty-queue poll
+      // is still fast; this just caps the ceiling for local dev comfort.
+      "maxPollingInterval": "00:00:30",
+      // Fetch up to 16 messages per batch so real work is still processed
+      // quickly whenever a message does arrive (runtime default: 16).
+      "batchSize": 16,
+      // Start a new batch once fewer than 8 messages are being processed
+      // (runtime default: 8 — kept explicit for readability).
+      "newBatchThreshold": 8
     }
   },
   "extensionBundle": {

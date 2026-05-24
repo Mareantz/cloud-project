@@ -5,6 +5,8 @@ import {
   InvocationContext,
 } from '@azure/functions';
 
+import { trackEvent } from '../../shared/telemetry';
+
 // ── Handler ──────────────────────────────────────────────────────────────────
 
 /**
@@ -16,6 +18,8 @@ export async function healthHandler(
   context: InvocationContext,
 ): Promise<HttpResponseInit> {
   context.log(`Health check – method=${request.method} url=${request.url}`);
+
+  trackEvent('health.check');
 
   return {
     status: 200,
