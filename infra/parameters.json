@@ -7,10 +7,6 @@
       "value": "rr"
     },
 
-    "location": {
-      "value": "australiaeast"
-    },
-
     "cosmosDatabaseName": {
       "value": "restaurant-reviews"
     },

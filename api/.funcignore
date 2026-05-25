@@ -1,0 +1,7 @@
+local.settings.json
+scripts/
+*.tsbuildinfo
+node_modules/.bin/
+node_modules/@types/
+node_modules/azure-functions-core-tools/
+node_modules/typescript/

@@ -2,8 +2,9 @@
 //
 // All functions return typed data on success, or throw ApiError on any
 // non-2xx response so callers can display consistent error messages.
-// The base URL is always relative (/api/...) so the Vite dev proxy and
-// SWA CLI both work transparently without any environment variable.
+// Local dev uses relative /api paths so the Vite proxy still works. In
+// production, VITE_API_BASE_URL can point the frontend at a standalone
+// Function App (for example: https://func-xyz.azurewebsites.net/api).
 
 // ── Domain types (mirrored from api/src/shared/types.ts) ─────────────────────
 // Keep in sync with the backend types by hand; no shared package needed for
@@ -83,6 +84,19 @@ interface ApiEnvelope<T> {
   error?: string;
 }
 
+const configuredApiBaseUrl = (
+  import.meta.env.VITE_API_BASE_URL as string | undefined
+)?.trim();
+
+const apiBaseUrl =
+  configuredApiBaseUrl && configuredApiBaseUrl !== '/'
+    ? configuredApiBaseUrl.replace(/\/$/, '')
+    : '';
+
+function apiUrl(path: `/${string}`): string {
+  return apiBaseUrl ? `${apiBaseUrl}${path}` : `/api${path}`;
+}
+
 // Parses the API envelope, throwing ApiError when the server signals failure.
 async function parseResponse<T>(res: Response): Promise<T> {
   let json: ApiEnvelope<T>;
@@ -120,7 +134,7 @@ export async function getRestaurants(filters: RestaurantFilters = {}): Promise<R
   if (filters.cuisine) params.set('cuisine', filters.cuisine);
 
   const query = params.toString() ? `?${params.toString()}` : '';
-  const res = await fetch(`/api/restaurants${query}`);
+  const res = await fetch(`${apiUrl('/restaurants')}${query}`);
   return parseResponse<Restaurant[]>(res);
 }
 
@@ -129,7 +143,7 @@ export async function getRestaurants(filters: RestaurantFilters = {}): Promise<R
  * Returns a single restaurant by its ID.
  */
 export async function getRestaurantById(id: string): Promise<Restaurant> {
-  const res = await fetch(`/api/restaurants/${encodeURIComponent(id)}`);
+  const res = await fetch(apiUrl(`/restaurants/${encodeURIComponent(id)}`));
   return parseResponse<Restaurant>(res);
 }
 
@@ -138,7 +152,7 @@ export async function getRestaurantById(id: string): Promise<Restaurant> {
  * Creates a new restaurant and returns the saved document.
  */
 export async function createRestaurant(input: CreateRestaurantInput): Promise<Restaurant> {
-  const res = await fetch('/api/restaurants', {
+  const res = await fetch(apiUrl('/restaurants'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -155,7 +169,7 @@ export async function uploadPhoto(file: File): Promise<string> {
   formData.append('photo', file);
 
   // Do NOT set Content-Type header — the browser must set it with the boundary.
-  const res = await fetch('/api/upload-photo', {
+  const res = await fetch(apiUrl('/upload-photo'), {
     method: 'POST',
     body: formData,
   });
@@ -176,7 +190,7 @@ export async function uploadReviewImage(file: File): Promise<UploadReviewImageRe
   // Field name must match what the upload endpoint reads: formData.get('image')
   formData.append('image', file);
   // Do NOT set Content-Type header — browser must set it with boundary.
-  const res = await fetch('/api/upload-review-image', {
+  const res = await fetch(apiUrl('/upload-review-image'), {
     method: 'POST',
     body: formData,
   });
@@ -189,7 +203,7 @@ export async function uploadReviewImage(file: File): Promise<UploadReviewImageRe
  * Returns all reviews for a restaurant, newest first.
  */
 export async function getReviews(restaurantId: string): Promise<Review[]> {
-  const res = await fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}/reviews`);
+  const res = await fetch(apiUrl(`/restaurants/${encodeURIComponent(restaurantId)}/reviews`));
   return parseResponse<Review[]>(res);
 }
 
@@ -202,7 +216,7 @@ export async function createReview(
   restaurantId: string,
   input: CreateReviewInput,
 ): Promise<Review> {
-  const res = await fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}/reviews`, {
+  const res = await fetch(apiUrl(`/restaurants/${encodeURIComponent(restaurantId)}/reviews`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     // Include restaurantId in the body as required by the API schema.

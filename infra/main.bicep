@@ -3,20 +3,19 @@
 //  Restaurant Reviews – Azure infrastructure
 //
 //  Resources provisioned:
-//    - Azure Static Web App (frontend + managed Functions API)
+//    - Azure Storage account (frontend static website enabled by deploy scripts)
+//    - Azure Function App + Consumption plan (HTTP API + queue worker)
 //    - Cosmos DB account / database / containers
-//    - Storage Account + blob containers (restaurant photos,
-//        review-image originals, review-image thumbnails)
+//    - Storage Account + blob containers
+//        (restaurant photos, review-image originals, review-image thumbnails)
 //    - Storage Queue (review-image processing trigger)
 //    - Log Analytics workspace + Application Insights
 //
 //  Deploy:
 //    bash infra/deploy.sh
-//  or manually:
-//    az deployment group create \
-//      --resource-group <rg> \
-//      --template-file infra/main.bicep \
-//      --parameters @infra/parameters.json
+//    pwsh infra/deploy.ps1
+//  The deploy scripts also enable static website hosting on the storage account
+//  after the ARM/Bicep deployment completes.
 // ============================================================
 
 // ── Parameters ────────────────────────────────────────────────────────────────
@@ -26,7 +25,7 @@
 @maxLength(8)
 param appName string = 'rr'
 
-@description('Azure region for all resources. Defaults to the resource group location.')
+@description('Azure region for all resources.')
 param location string = resourceGroup().location
 
 @description('''
@@ -69,7 +68,8 @@ var uniqueSuffix = take(uniqueString(resourceGroup().id), 6)
 
 // Resource names follow the recommended Azure abbreviation convention:
 //   https://learn.microsoft.com/azure/cloud-adoption-framework/ready/azure-best-practices/resource-abbreviations
-var staticWebAppName  = 'swa-${appName}'
+var functionPlanName  = 'plan-${appName}'
+var functionAppName   = 'func-${appName}-${uniqueSuffix}'
 var cosmosAccountName = 'cosmos-${appName}-${uniqueSuffix}'
 var storageAccountName = 'st${appName}${uniqueSuffix}'        // max 24 chars, alphanumeric only
 var logAnalyticsName  = 'log-${appName}'
@@ -264,83 +264,130 @@ resource reviewsContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/co
   }
 }
 
-// ── Static Web App ────────────────────────────────────────────────────────────
-// Free SKU includes:
-//   - Global CDN for the React frontend
-//   - Managed Azure Functions for the API (no separate Function App needed)
-//   - Custom domains + free SSL
-//
-// The API is deployed via `swa deploy` using the deployment token output below.
-// The `buildProperties` mirror the values in .env.example / SWA CLI config and
-// are used by CI/CD pipelines; they have no effect on manual deployments.
+// ── Azure Functions (standalone Function App) ─────────────────────────────────
+// The React frontend is hosted as a Storage Static Website and talks directly to
+// this Function App over HTTPS. CORS is opened for this anonymous student
+// project so the static site can call the API regardless of the final web
+// endpoint chosen by Azure.
 
-resource staticWebApp 'Microsoft.Web/staticSites@2023-01-01' = {
-  name: staticWebAppName
+resource functionPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
+  name: functionPlanName
   location: location
   sku: {
-    name: 'Free'
-    tier: 'Free'
+    name: 'Y1'
+    tier: 'Dynamic'
   }
   properties: {
-    buildProperties: {
-      appLocation: 'frontend'    // root of the Vite app
-      apiLocation: 'api'         // root of the Functions app
-      outputLocation: 'dist'     // Vite build output
+    reserved: true
+  }
+}
+
+var storageConnectionString = 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
+
+resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
+  name: functionAppName
+  location: location
+  kind: 'functionapp,linux'
+  properties: {
+    serverFarmId: functionPlan.id
+    httpsOnly: true
+    reserved: true
+    siteConfig: {
+      minTlsVersion: '1.2'
+      linuxFxVersion: 'NODE|22'
+      cors: {
+        allowedOrigins: [ '*' ]
+        supportCredentials: false
+      }
+      appSettings: [
+        {
+          name: 'APPINSIGHTS_INSTRUMENTATIONKEY'
+          value: appInsights.properties.InstrumentationKey
+        }
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: appInsights.properties.ConnectionString
+        }
+        {
+          name: 'AzureWebJobsStorage'
+          value: storageConnectionString
+        }
+        {
+          name: 'BLOB_CONNECTION_STRING'
+          value: storageConnectionString
+        }
+        {
+          name: 'BLOB_CONTAINER_NAME'
+          value: blobContainerImages
+        }
+        {
+          name: 'COSMOS_CONTAINER_RESTAURANTS'
+          value: cosmosContainerRestaurants
+        }
+        {
+          name: 'COSMOS_CONTAINER_REVIEWS'
+          value: cosmosContainerReviews
+        }
+        {
+          name: 'COSMOS_DATABASE'
+          value: cosmosDatabaseName
+        }
+        {
+          name: 'COSMOS_ENDPOINT'
+          value: cosmosAccount.properties.documentEndpoint
+        }
+        {
+          name: 'COSMOS_KEY'
+          value: cosmosAccount.listKeys().primaryMasterKey
+        }
+        {
+          name: 'FUNCTIONS_EXTENSION_VERSION'
+          value: '~4'
+        }
+        {
+          name: 'FUNCTIONS_WORKER_RUNTIME'
+          value: 'node'
+        }
+        {
+          name: 'AzureWebJobsFeatureFlags'
+          value: 'EnableWorkerIndexing'
+        }
+        {
+          name: 'REVIEW_IMAGES_CONTAINER_NAME'
+          value: blobContainerReviewImages
+        }
+        {
+          name: 'REVIEW_IMAGES_QUEUE_NAME'
+          value: reviewImagesQueueName
+        }
+        {
+          name: 'REVIEW_THUMBNAILS_CONTAINER_NAME'
+          value: blobContainerReviewThumbnails
+        }
+        {
+          name: 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING'
+          value: storageConnectionString
+        }
+        {
+          name: 'WEBSITE_CONTENTSHARE'
+          value: toLower(functionAppName)
+        }
+      ]
     }
   }
 }
 
-// ── Static Web App – application settings ────────────────────────────────────
-// These become environment variables for the managed Functions API at runtime.
-// They are equivalent to "Application Settings" in the Azure portal.
-//
-// Secrets (Cosmos key, storage key) are resolved at deploy time via listKeys()
-// and stored securely in the SWA configuration – they are never written to
-// parameters.json or source control.
-
-var storageConnectionString = 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
-
-resource swaAppSettings 'Microsoft.Web/staticSites/config@2023-01-01' = {
-  parent: staticWebApp
-  name: 'appsettings'
-  properties: {
-    // Azure Functions runtime requirements
-    FUNCTIONS_WORKER_RUNTIME:              'node'
-    AzureWebJobsStorage:                   storageConnectionString
-
-    // Cosmos DB
-    COSMOS_ENDPOINT:                       cosmosAccount.properties.documentEndpoint
-    COSMOS_KEY:                            cosmosAccount.listKeys().primaryMasterKey
-    COSMOS_DATABASE:                       cosmosDatabaseName
-    COSMOS_CONTAINER_RESTAURANTS:          cosmosContainerRestaurants
-    COSMOS_CONTAINER_REVIEWS:             cosmosContainerReviews
-
-    // Blob Storage (photo uploads).
-    // Variable names must match what blobClient.ts reads via requireEnv().
-    BLOB_CONNECTION_STRING:                storageConnectionString
-    BLOB_CONTAINER_NAME:                   blobContainerImages
-
-    // Review-image pipeline (Phase 2).
-    // REVIEW_IMAGES_CONTAINER_NAME  – originals uploaded with each review.
-    // REVIEW_THUMBNAILS_CONTAINER_NAME – thumbnails written by the queue-triggered function.
-    // REVIEW_IMAGES_QUEUE_NAME      – queue that triggers thumbnail generation.
-    REVIEW_IMAGES_CONTAINER_NAME:          blobContainerReviewImages
-    REVIEW_THUMBNAILS_CONTAINER_NAME:      blobContainerReviewThumbnails
-    REVIEW_IMAGES_QUEUE_NAME:              reviewImagesQueueName
-
-    // Application Insights telemetry
-    APPLICATIONINSIGHTS_CONNECTION_STRING: appInsights.properties.ConnectionString
-  }
-}
-
 // ── Outputs ───────────────────────────────────────────────────────────────────
-// These are printed by `az deployment group show` and captured in deploy.sh.
+// These are printed by `az deployment group show` and captured in the deploy scripts.
 
-@description('Public hostname of the Static Web App (e.g. purple-desert-0123.azurestaticapps.net).')
-output staticWebAppHostname string = staticWebApp.properties.defaultHostname
+@description('Function App name used by manual deploy commands and CI/CD configuration.')
+output functionAppName string = functionApp.name
 
-@description('Deployment token used by `swa deploy` to publish the app. Treat as a secret.')
-output staticWebAppDeploymentToken string = staticWebApp.listSecrets().properties.apiKey
+@description('Default hostname of the Function App (e.g. func-rr-abc123.azurewebsites.net).')
+output functionAppHostname string = functionApp.properties.defaultHostName
+
+@description('Base URL the frontend should use when calling the Function App API.')
+output functionAppApiBaseUrl string = 'https://${functionApp.properties.defaultHostName}/api'
 
 @description('Cosmos DB endpoint URL (value of COSMOS_ENDPOINT).')
 output cosmosEndpoint string = cosmosAccount.properties.documentEndpoint

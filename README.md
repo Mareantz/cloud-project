@@ -78,8 +78,8 @@ Nine functions written in TypeScript using the Azure Functions v4 programming mo
 ### Infrastructure (Bicep + GitHub Actions)
 
 - `infra/main.bicep` — single Bicep template that provisions every Azure resource
-- `infra/deploy.sh` — wrapper script (Azure CLI) for one-command provisioning
-- `.github/workflows/azure-swa.yml` — CI/CD pipeline: build, test TypeScript, deploy to Azure Static Web Apps on every push to `main`
+- `infra/deploy.sh` / `infra/deploy.ps1` — Bash and PowerShell wrappers for Azure provisioning
+- `.github/workflows/azure-swa.yml` — CI/CD pipeline: validate PR builds, deploy the frontend to Azure Storage Static Website and the API to Azure Functions on pushes to `main`
 
 ---
 
@@ -89,32 +89,31 @@ Nine functions written in TypeScript using the Azure Functions v4 programming mo
 Browser
   │
   ▼
-Azure Static Web Apps  ──────────────────────────────────────┐
-  │  (CDN-hosted React SPA)                                  │
-  │  /api/* requests routed to managed Functions             │
-  ▼                                                          │
-Azure Functions — HTTP triggers (Node.js 20, managed by SWA) │
-  ├── Reads/writes ──────────────→ Azure Cosmos DB for NoSQL │
-  ├── Reads/writes ──────────────→ Azure Blob Storage        │
-  │     ├── restaurant-images    (restaurant cover photos)   │
-  │     ├── review-images        (original review photos)    │
-  │     └── review-thumbnails    (auto-generated thumbnails) │
-  ├── Enqueues job ──────────────→ Azure Storage Queue       │
-  │     └── review-image-processing                          │
-  └── Emits telemetry ───────────→ Application Insights      │
-                                         │                    │
-Azure Functions — Queue trigger          │                    │
-  └── generateThumbnail                  │                    │
-        reads  → review-images (Blob)    │                    │
-        writes → review-thumbnails (Blob)│                    │
-                                         ▼                    │
-                              Log Analytics Workspace ─────────┘
+Azure Storage Static Website ─────────────┐
+  │ (hosts the React SPA build)           │
+  ▼                                       │
+Browser calls Function App over HTTPS     │
+  ▼                                       │
+Azure Function App (Node.js 22, Consumption)
+  ├── HTTP triggers ──────────────→ Azure Cosmos DB for NoSQL
+  ├── HTTP triggers ──────────────→ Azure Blob Storage
+  │     ├── restaurant-images    (restaurant cover photos)
+  │     ├── review-images        (original review photos)
+  │     └── review-thumbnails    (auto-generated thumbnails)
+  ├── HTTP triggers enqueue ─────→ Azure Storage Queue
+  │     └── review-image-processing
+  ├── Queue trigger generateThumbnail
+  │     reads  → review-images (Blob)
+  │     writes → review-thumbnails (Blob)
+  └── Emits telemetry ───────────→ Application Insights
+                                        ▼
+                              Log Analytics Workspace
 ```
 
 | Azure Service               | Role in this project                                                                                                                                                            | SKU / Mode                                 |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| **Static Web Apps**         | Hosts the React frontend via global CDN; provides a managed Azure Functions runtime for the API (no separate Function App resource needed)                                      | Free                                       |
-| **Azure Functions v4**      | REST API — all HTTP endpoints plus one queue-triggered thumbnail worker; runs inside the SWA managed environment                                                                | Node.js 20, managed                        |
+| **Azure Storage Static Website** | Hosts the built React frontend as a static website endpoint                                                                                                               | Standard LRS (same Storage Account)        |
+| **Azure Functions v4**      | REST API plus the queue-triggered thumbnail worker; runs as a standalone Function App so both HTTP and queue triggers work in Azure                                             | Node.js 22, Consumption                    |
 | **Cosmos DB for NoSQL**     | Primary database; stores restaurants and reviews (including `imageUrl` / `thumbnailUrl`) as JSON documents                                                                      | Serverless (default) or Free Tier (opt-in) |
 | **Blob Storage**            | Three containers: `restaurant-images` (cover photos), `review-images` (original review photos), `review-thumbnails` (auto-generated 128-px JPEG thumbnails); all public-read   | Standard LRS                               |
 | **Storage Queue**           | `review-image-processing` queue decouples upload from thumbnail generation; enqueued by `uploadReviewImage`, consumed by the `generateThumbnail` queue-trigger function         | Standard (part of Storage Account)         |
@@ -139,16 +138,16 @@ Azure Functions — Queue trigger          │                    │
 
 | Requirement                             | Service Used                                    | Where it is used                                                                 | Evidence in code                                                                                                                                       |
 | --------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Service 1 — Hosting / Compute**       | Azure Static Web Apps + managed Azure Functions | Hosts the React SPA and all API endpoints                                        | `infra/main.bicep` (`Microsoft.Web/staticSites`); `staticwebapp.config.json`; `.github/workflows/azure-swa.yml`                                        |
+| **Service 1 — Hosting / Compute**       | Azure Storage Static Website + Azure Function App | Hosts the React SPA and all API endpoints                                       | `infra/main.bicep` (`Microsoft.Storage/storageAccounts`, `Microsoft.Web/sites`); `frontend/src/services/api.ts`; `.github/workflows/azure-swa.yml` |
 | **Service 2 — Database**                | Azure Cosmos DB for NoSQL                       | Persists every restaurant and review document (incl. `imageUrl`/`thumbnailUrl`)  | `api/src/shared/cosmosClient.ts`; `infra/main.bicep` (`Microsoft.DocumentDB/databaseAccounts`); all CRUD functions under `api/src/functions/`          |
 | **Service 3 — Object Storage**          | Azure Blob Storage                              | Three containers: restaurant cover photos, original review images, auto-generated thumbnails | `api/src/shared/blobClient.ts`; `api/src/functions/uploadPhoto/`, `uploadReviewImage/`, `generateThumbnail/`; `infra/main.bicep`            |
 | **Service 4 — Asynchronous Processing** | Azure Storage Queue                             | Decouples review-image upload from thumbnail generation; `uploadReviewImage` enqueues, `generateThumbnail` consumes | `api/src/functions/uploadReviewImage/index.ts`; `api/src/functions/generateThumbnail/index.ts`; `infra/main.bicep` (`Microsoft.Storage/storageAccounts/queueServices/queues`) |
 | **Service 5 — Observability**           | Application Insights                            | Tracks custom events (`review.image.uploaded`, `thumbnail.generated`, etc.), HTTP dependencies, and exceptions | `api/src/shared/telemetry.ts`; `frontend/src/main.tsx`; `infra/main.bicep` (`Microsoft.Insights/components`)                       |
 | **Service 6 — Log Management**          | Log Analytics workspace                         | Backs Application Insights (workspace-based); retains all telemetry for querying | `infra/main.bicep` (`Microsoft.OperationalInsights/workspaces`)                                                                                        |
 | **Bonus — IaC**                         | Bicep                                           | All six services above are defined declaratively; fully repeatable deployment    | `infra/main.bicep`, `infra/parameters.json`, `infra/deploy.sh`                                                                                         |
-| **Bonus — CI/CD**                       | GitHub Actions                                  | Automated build and deploy on every push to `main`; PR preview environments     | `.github/workflows/azure-swa.yml`                                                                                                                      |
+| **Bonus — CI/CD**                       | GitHub Actions                                  | Automated production deploys on pushes to `main`; pull requests run build validation only | `.github/workflows/azure-swa.yml`                                                                                                                      |
 
-**Minimum requirement met:** 6 Azure services used (Static Web Apps, Azure Functions, Cosmos DB, Blob Storage, Storage Queue, Application Insights).
+**Minimum requirement met:** 5 Azure services used (Azure Storage, Azure Functions, Cosmos DB, Application Insights, Log Analytics).
 
 > **Assignment alignment:** the review-image pipeline specifically demonstrates event-driven / asynchronous cloud architecture — a common advanced requirement. `uploadReviewImage` (HTTP trigger) writes to Blob Storage **and** enqueues a message; `generateThumbnail` (Queue trigger) reacts to that message to produce a derived artefact. This is a textbook producer/consumer pattern using two distinct Azure services (Blob Storage + Storage Queue) coordinated by a serverless function pair.
 
@@ -212,7 +211,6 @@ Open **http://localhost:5173** — you should see a list of sample restaurants.
 | Tool          | Install                                                 |
 | ------------- | ------------------------------------------------------- |
 | **Azure CLI** | https://learn.microsoft.com/cli/azure/install-azure-cli |
-| **SWA CLI**   | `npm install -g @azure/static-web-apps-cli`             |
 
 > Bicep CLI is bundled with Azure CLI ≥ 2.20. Run `az bicep install` to ensure it is available.
 
@@ -278,13 +276,13 @@ npm run dev        # Vite dev server with HMR
 
 Open **http://localhost:5173**.
 
-The Vite dev server proxies all `/api/*` requests to `http://localhost:7071` (configured in `frontend/vite.config.ts`), so the frontend and API behave identically to production routing without needing SWA CLI.
+The Vite dev server proxies all `/api/*` requests to `http://localhost:7071` (configured in `frontend/vite.config.ts`), so the frontend and API work locally without any extra gateway tooling.
 
 ---
 
-### Option B — SWA CLI (production-like routing, single port)
+### Option B — SWA CLI (optional local integration, single port)
 
-SWA CLI runs the frontend and API behind a single gateway on port `4280`, exactly matching how Azure Static Web Apps routes requests in production. Use this when you need to validate routing behaviour before deploying.
+SWA CLI can still run the frontend and API behind a single gateway on port `4280`. It is optional for local development only; production now uses Azure Storage Static Website + Function App instead of Static Web Apps.
 
 ```bash
 # Start the API first (leave it running)
@@ -637,12 +635,12 @@ cloud-project/
 
 | Variable                                     | Purpose                                                                      |
 | -------------------------------------------- | ---------------------------------------------------------------------------- |
-| `VITE_API_BASE_URL`                          | API base URL for non-proxied environments (unused when Vite proxy is active) |
+| `VITE_API_BASE_URL`                          | API base URL for non-proxied environments; in Azure set this to `https://<function-app-name>.azurewebsites.net/api` |
 | `VITE_APPLICATIONINSIGHTS_CONNECTION_STRING` | Baked into the JS bundle at build time; blank disables frontend telemetry    |
 
-### Production app settings (set automatically by Bicep)
+### Production Function App settings (set automatically by Bicep)
 
-The Bicep template wires all required settings directly onto the Static Web App — no manual portal configuration needed after `deploy.sh` runs.
+The Bicep template wires all required settings directly onto the Azure Function App — no manual portal configuration is needed after provisioning.
 
 | App setting                             | Source                                                  |
 | --------------------------------------- | ------------------------------------------------------- |
@@ -685,6 +683,14 @@ The Bicep template wires all required settings directly onto the Static Web App 
 
 ## 14. Deployment to Azure
 
+### Why production uses Storage Static Website + Function App
+
+Azure for Students blocked all Static Web Apps-supported regions for this subscription, so the production deployment uses:
+
+1. **Azure Storage Static Website** for the React frontend
+2. **Azure Function App (Consumption, Node.js 22)** for all HTTP and queue-triggered functions
+3. **`VITE_API_BASE_URL`** so the deployed frontend calls the Function App directly over HTTPS
+
 ### Step 1 — Log in to Azure CLI
 
 ```bash
@@ -695,8 +701,10 @@ az account set --subscription "<your subscription name or ID>"
 ### Step 2 — Provision infrastructure
 
 ```bash
-# Optional: edit infra/parameters.json to change appName, location, or enableCosmosFreeTier
+# Optional: edit infra/parameters.json to change container/database names or Cosmos free tier
 bash infra/deploy.sh
+# or on Windows:
+pwsh -File .\infra\deploy.ps1
 ```
 
 The script:
@@ -704,15 +712,20 @@ The script:
 1. Creates the resource group (`rg-restreviews` by default, overridable via env vars)
 2. Validates the Bicep template
 3. Deploys all Azure resources (~3–8 minutes)
-4. Prints the Static Web App hostname and deployment token when done
+4. Enables static website hosting on the provisioned storage account
+5. Prints the static website URL, Function App name, Function App API base URL, storage account name, and App Insights connection string
 
-**Windows users:** run in Git Bash or WSL. All `az` commands also work natively in PowerShell — see `infra/deploy.sh` for the equivalent individual commands.
+**Windows users:** `infra/deploy.ps1` is the native PowerShell version of the provisioning flow.
+
+> **Region selection:** the deploy scripts now default to `auto` and first query Azure Policy location assignments plus `az account list-locations` so they probe the regions your subscription actually exposes, with Europe-first ordering when multiple regions are allowed. If Azure location discovery is unavailable, they fall back to the built-in preferred list: `italynorth`, `francecentral`, `germanywestcentral`, `northeurope`, `westeurope`, `swedencentral`, `eastus2`, `centralus`, `westus2`, `eastasia`.
+>
+> **Azure for Students note:** your subscription can still block individual regions dynamically. `AZURE_LOCATION=auto` (or `-AzureLocation auto` in PowerShell) is the recommended setting.
 
 You can override defaults without editing `parameters.json`:
 
 ```bash
 AZURE_RESOURCE_GROUP=rg-myapp \
-AZURE_LOCATION=eastus \
+AZURE_LOCATION=auto \
 APP_NAME=myapp \
 bash infra/deploy.sh
 ```
@@ -720,20 +733,48 @@ bash infra/deploy.sh
 | Variable               | Default          | Description                                                                                      |
 | ---------------------- | ---------------- | ------------------------------------------------------------------------------------------------ |
 | `AZURE_RESOURCE_GROUP` | `rg-restreviews` | Resource group name                                                                              |
-| `AZURE_LOCATION`       | `australiaeast`  | Azure region                                                                                     |
+| `AZURE_LOCATION`       | `auto`           | Preferred setting for Azure for Students; probes Europe-first candidate regions automatically    |
 | `APP_NAME`             | `rr`             | 2–8 character prefix for all resource names                                                      |
 | `COSMOS_FREE_TIER`     | `false`          | `true` to enable Cosmos DB Free Tier (one per subscription; not compatible with serverless mode) |
 
-### Step 3 — Deploy the application
-
-The deploy script provisions infrastructure only. Push the built app with the SWA CLI:
+### Step 3 — Publish the API
 
 ```bash
-cd frontend && npm run build && cd ..
-swa deploy frontend/dist \
-  --api-location api \
-  --deployment-token '<token printed by deploy.sh>'
+cd api
+npm ci
+npm run build
+npx func azure functionapp publish <function-app-name> --build remote
+cd ..
 ```
+
+`<function-app-name>` is printed by `infra/deploy.sh` / `infra/deploy.ps1` after provisioning completes.
+
+`--build remote` is recommended here because the Function App runs on Linux and the API depends on `sharp`, which must be restored for the target platform instead of reusing Windows-built native modules.
+
+### Step 4 — Deploy the frontend
+
+Build the frontend with the Function App API base URL, then upload the build output to the storage account's `$web` container:
+
+```bash
+cd frontend
+npm ci
+VITE_API_BASE_URL='https://<function-app-name>.azurewebsites.net/api' \
+VITE_APPLICATIONINSIGHTS_CONNECTION_STRING='<app-insights-connection-string>' npm run build
+cd ..
+
+STORAGE_CONNECTION_STRING=$(az storage account show-connection-string \
+  --name '<storage-account-name>' \
+  --resource-group '<resource-group-name>' \
+  --query connectionString -o tsv)
+
+az storage blob upload-batch \
+  --connection-string "$STORAGE_CONNECTION_STRING" \
+  --destination '$web' \
+  --source frontend/dist \
+  --overwrite
+```
+
+On PowerShell, set `$env:VITE_API_BASE_URL` and `$env:VITE_APPLICATIONINSIGHTS_CONNECTION_STRING` before `npm run build`, then remove them afterward.
 
 Alternatively, set up the GitHub Actions CI/CD pipeline (see §15) and every push to `main` deploys automatically.
 
@@ -741,7 +782,9 @@ Alternatively, set up the GitHub Actions CI/CD pipeline (see §15) and every pus
 
 | Resource                | Name pattern                | Purpose                                                                         |
 | ----------------------- | --------------------------- | ------------------------------------------------------------------------------- |
-| Static Web App          | `swa-<appName>`             | Hosts React frontend + managed Functions API                                    |
+| Storage static website  | `st<appName><suffix>`       | Hosts the React frontend via the storage account's web endpoint                 |
+| Function App            | `func-<appName>-<suffix>`   | Runs all HTTP API endpoints and the `generateThumbnail` queue trigger           |
+| Functions plan          | `plan-<appName>`            | Consumption hosting plan (`Y1`) for the Function App                            |
 | Cosmos DB account       | `cosmos-<appName>-<suffix>` | NoSQL database                                                                  |
 | Cosmos DB database      | `restaurant-reviews`        | Application database                                                            |
 | Cosmos DB container     | `restaurants`               | Restaurant documents (partition: `/city`)                                       |
@@ -758,50 +801,54 @@ Alternatively, set up the GitHub Actions CI/CD pipeline (see §15) and every pus
 
 ### Estimated cost
 
-| Resource                       | Cost                                            |
-| ------------------------------ | ----------------------------------------------- |
-| Static Web App (Free tier)     | **$0/month**                                    |
-| Cosmos DB serverless           | ~$0 for light dev/test (billed per RU consumed) |
-| Storage Account (Standard LRS) | < $0.10/month for small datasets                |
-| Application Insights           | First 5 GB/month ingestion free                 |
-| Log Analytics                  | First 5 GB/month ingestion free                 |
+| Resource                       | Cost note                                                                         |
+| ------------------------------ | --------------------------------------------------------------------------------- |
+| Storage Static Website         | Very low cost; uses the same storage account already needed for blobs and queue   |
+| Function App (Consumption)     | Pay per execution; typically very small for a light student demo workload         |
+| Cosmos DB serverless           | Pay per RU consumed; usually low for dev/test                                     |
+| Storage Account (Standard LRS) | Low cost for small images and queue usage                                         |
+| Application Insights           | Small/zero cost at low telemetry volumes; check current free grant and pricing    |
+| Log Analytics                  | Small/zero cost at low telemetry volumes; check current free grant and pricing    |
 
-> A typical student project with light traffic costs **under $1/month** with default settings.
+> Azure for Students balance should comfortably cover a short-lived demo deployment with this storage-website + Function App setup.
 
 ### Live URL
 
 The deployed URL is generated by Azure at provision time and follows the pattern:  
-`https://<auto-generated-name>.azurestaticapps.net`
+`https://<storage-account>.z##.web.core.windows.net`
 
-The exact hostname is printed by `deploy.sh` at the end of provisioning and is visible in the Azure portal under the Static Web App resource → **URL**. There is no fixed URL to document here — it depends on your subscription and chosen `APP_NAME`.
+The exact URL is printed by `deploy.sh` / `deploy.ps1` at the end of provisioning and is visible in the Azure portal under the Storage Account → **Static website** blade. There is no fixed URL to document here — it depends on your subscription and chosen `APP_NAME`.
 
 ---
 
 ## 15. CI/CD — GitHub Actions
 
-The workflow at `.github/workflows/azure-swa.yml` builds and deploys the app automatically.
+The workflow at `.github/workflows/azure-swa.yml` validates pull requests and deploys production automatically.
 
 ### Triggers
 
-| Trigger                       | What happens                                                                             |
-| ----------------------------- | ---------------------------------------------------------------------------------------- |
-| Push to `main`                | Full build → deploy to the **production** Static Web App URL                             |
-| Pull request opened / updated | Full build → deploy to a **temporary preview URL** (Azure posts the URL as a PR comment) |
-| Pull request closed / merged  | Azure deletes the temporary preview environment automatically                            |
+| Trigger                       | What happens                                                                                   |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| Push to `main`                | Build API + frontend, deploy the Function App, then upload the frontend to the production storage website |
+| `workflow_dispatch`           | Manually run the same production deployment from the Actions tab                               |
+| Pull request opened / updated | Build validation only                                                                          |
 
 ### Build pipeline steps
 
 1. Checkout repository (`actions/checkout@v4`)
-2. Set up Node.js 20 with `npm` cache keyed on both lock files
-3. `npm ci && npm run build` in `frontend/` → produces `frontend/dist/`
-4. `npm ci && npm run build` in `api/` → compiles TypeScript to `api/dist/`
-5. `Azure/static-web-apps-deploy@v1` uploads the pre-built output (`skip_app_build: true`, `skip_api_build: true`)
+2. Set up Node.js 22 with `npm` cache keyed on both lock files
+3. `npm ci && npm run build` in `api/` → compiles TypeScript to `api/dist/`
+4. `Azure/functions-action@v1` deploys the API package to the Azure Function App (respecting `api/.funcignore`)
+5. `npm ci && npm run build` in `frontend/` with `VITE_API_BASE_URL=https://<function-app>.azurewebsites.net/api` → produces `frontend/dist/`
+6. `az storage blob upload-batch` uploads the pre-built frontend to the storage account's `$web` container
 
-### Required GitHub secret
+### Required GitHub secrets
 
-| Secret                 | Value                                    | Where to find it                                                                                                                                                                                |
-| ---------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SWA_DEPLOYMENT_TOKEN` | Deployment token for your Static Web App | Azure portal → Static Web App → **Manage deployment token**; or `bash infra/deploy.sh` (printed at end); or `az staticwebapp secrets list --name <swa-name> --query "properties.apiKey" -o tsv` |
+| Secret                             | Value                                         | Where to find it                                                                                                                                                                                          |
+| ---------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AZURE_FUNCTION_APP_NAME`          | Name of the Azure Function App                | Printed by `infra/deploy.sh` / `infra/deploy.ps1` after provisioning                                                                                                                                     |
+| `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` | Publish profile XML for the Function App      | `az functionapp deployment list-publishing-profiles --name <function-app-name> --resource-group <rg-name> --xml`                                                                                      |
+| `AZURE_STORAGE_CONNECTION_STRING`  | Connection string for the storage account     | `az storage account show-connection-string --name <storage-account-name> --resource-group <rg-name> --query connectionString -o tsv`                                                                  |
 
 ### Optional GitHub secret
 
@@ -815,12 +862,15 @@ The workflow at `.github/workflows/azure-swa.yml` builds and deploys the app aut
 # 1. Provision Azure resources
 bash infra/deploy.sh
 
-# 2. Add the deployment token as a GitHub secret:
+# 2. Add the GitHub secrets:
 #    Repository → Settings → Secrets and variables → Actions → New repository secret
-#    Name:  SWA_DEPLOYMENT_TOKEN
-#    Value: <paste the token from deploy.sh output>
+#    AZURE_FUNCTION_APP_NAME
+#    AZURE_FUNCTIONAPP_PUBLISH_PROFILE
+#    AZURE_STORAGE_CONNECTION_STRING
 
-# 3. Push a commit to main — the workflow runs automatically.
+# 3. (Optional) Add VITE_APPLICATIONINSIGHTS_CONNECTION_STRING for frontend telemetry
+#
+# 4. Push a commit to main — the workflow runs automatically.
 ```
 
 ---
@@ -847,8 +897,8 @@ Use this list when preparing your live demo or screen recording.
 
 ### Azure deployment demo
 
-- [ ] Show the Static Web App resource in the Azure portal (Overview tab with the generated URL)
-- [ ] Open the live URL in a browser — the app loads from the Azure CDN
+- [ ] Show the Storage Account → **Static website** blade in the Azure portal (endpoint URL visible)
+- [ ] Open the live URL in a browser — the app loads from the storage static website endpoint
 - [ ] Show the Cosmos DB account in the portal → Data Explorer → `restaurant-reviews` database → `reviews` container → confirm documents contain `imageUrl` and `thumbnailUrl` fields
 - [ ] Show the Storage Account → Containers → `review-images` → confirm original review photos are present
 - [ ] Show the Storage Account → Containers → `review-thumbnails` → confirm 128-px thumbnails exist at matching blob paths
@@ -867,8 +917,8 @@ Use this list when preparing your live demo or screen recording.
 - [ ] `frontend/src/components/ReviewCard.tsx` — show that `thumbnailUrl` is preferred over `imageUrl` as `<img src>`, and the thumbnail wraps a link to the full-size original
 - [ ] `api/src/shared/blobClient.ts` — show the `uploadReviewImageBlob()` helper and `getReviewThumbnailsContainerClient()`
 - [ ] `api/src/shared/telemetry.ts` — show `trackEvent()` and `trackException()` wrappers
-- [ ] `infra/main.bicep` — show the `reviewImagesQueue`, `reviewImagesContainer`, and `reviewThumbnailsContainer` resources alongside `swaAppSettings`
-- [ ] `.github/workflows/azure-swa.yml` — show the two-job structure (build/deploy + PR cleanup)
+- [ ] `infra/main.bicep` — show the `blobService` static website config, `reviewImagesQueue`, and `functionApp` resources
+- [ ] `.github/workflows/azure-swa.yml` — show the split between PR build validation and production deploy
 
 ---
 
@@ -884,11 +934,11 @@ Use this list when preparing your live demo or screen recording.
 
 **Blob container name differs between local and production for restaurant cover photos.** The local emulator uses `restaurant-photos` (set in `local.settings.json`), while the Bicep template provisions a container named `restaurant-images`. Both values land in `BLOB_CONTAINER_NAME` — the code creates the container on first use (`createIfNotExists()`), so both environments work. The review-image containers (`review-images`, `review-thumbnails`) and the queue name are consistent between local and production. The `restaurant-photos` / `restaurant-images` inconsistency should be standardised in a follow-up.
 
-**No CORS restriction in local development.** `api/local.settings.json` sets `CORS: "*"` for convenience. The production Static Web Apps environment handles CORS at the platform level; this setting has no effect there.
+**No CORS restriction in local development.** `api/local.settings.json` sets `CORS: "*"` for convenience. In production the frontend is hosted separately from the Function App, so the Bicep template configures the Function App CORS policy to allow browser calls from the static website.
 
-**Single-region deployment.** The Bicep template deploys all resources to one Azure region (default: `australiaeast`). No geo-redundancy or failover is configured — appropriate for a student project but not production-grade.
+**Single-region deployment.** The Bicep template deploys all resources to one Azure region chosen by the deploy script (or the explicit `AZURE_LOCATION` you pass). No geo-redundancy or failover is configured — appropriate for a student project but not production-grade.
 
-**SWA manages the Functions runtime.** Rather than deploying a separate Azure Function App resource, the API is hosted inside the Static Web App's managed Functions environment. This simplifies deployment and eliminates the need for a separate `Microsoft.Web/sites` resource, but it limits supported runtime configurations compared to a standalone Function App.
+**Production uses Azure Storage Static Website.** Because Azure for Students blocked all viable Static Web Apps regions for this subscription, the deploy scripts enable static website hosting on the storage account and the frontend build uses `VITE_API_BASE_URL` to call the standalone Function App directly.
 
 **Application Insights is optional for local development.** When `APPLICATIONINSIGHTS_CONNECTION_STRING` is blank, the `telemetry.ts` helper silently no-ops all `trackEvent()` and `trackException()` calls. The app works fully without it locally.
 
@@ -898,7 +948,7 @@ Use this list when preparing your live demo or screen recording.
 
 | Area                      | Improvement                                                                                                                                                                   |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Authentication**        | Add Azure Static Web Apps built-in auth (GitHub / AAD / Google) so reviews can be attributed to verified users and duplicate submissions prevented                            |
+| **Authentication**        | Add Azure Entra ID / OAuth login so reviews can be attributed to verified users and duplicate submissions prevented                                                           |
 | **Input validation**      | Move validation logic into a shared schema library (e.g. Zod) used by both the API and frontend                                                                               |
 | **Pagination**            | Add `continuationToken`-based pagination to `GET /api/restaurants` and `GET /api/restaurants/{id}/reviews` for large datasets                                                 |
 | **Thumbnail polling**     | Add a small polling or WebSocket mechanism in `ReviewCard` so the thumbnail image refreshes automatically the moment the queue worker completes, rather than relying on a page reload |

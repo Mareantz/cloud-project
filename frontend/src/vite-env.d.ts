@@ -3,7 +3,8 @@
 // Type-safe access to Vite environment variables.
 // Add new VITE_* variables here as you introduce them.
 interface ImportMetaEnv {
-  readonly VITE_API_BASE_URL: string;
+  readonly VITE_API_BASE_URL?: string;
+  readonly VITE_APPLICATIONINSIGHTS_CONNECTION_STRING?: string;
 }
 
 interface ImportMeta {

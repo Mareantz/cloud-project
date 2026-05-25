@@ -2,89 +2,69 @@
 #  .github/workflows/azure-swa.yml
 #
 #  CI/CD pipeline for the Restaurant Reviews app.
-#  Builds and deploys the React frontend + Azure Functions API
-#  to Azure Static Web Apps on every push to main and on every
-#  pull request targeting main.
+#  Deploys the API to Azure Function App and the React frontend
+#  to an Azure Storage Static Website.
 #
-#  Required GitHub secret
-#  ─────────────────────
-#  SWA_DEPLOYMENT_TOKEN  – deployment token for your Static Web App.
-#    How to get it:
-#      Option A – Azure portal → your Static Web App → Manage deployment token
-#      Option B – Azure CLI: az staticwebapp secrets list \
-#                              --name <your-swa-name> \
-#                              --query "properties.apiKey" -o tsv
-#      Option C – run: bash infra/deploy.sh  (prints the token at the end)
+#  Required GitHub secrets
+#  ───────────────────────
+#  AZURE_FUNCTION_APP_NAME
+#    Name of the Azure Function App provisioned by infra/main.bicep.
+#
+#  AZURE_FUNCTIONAPP_PUBLISH_PROFILE
+#    Publish profile XML for the Function App.
+#    Get it with:
+#      az functionapp deployment list-publishing-profiles \
+#        --name <your-function-app-name> \
+#        --resource-group <your-resource-group> \
+#        --xml
+#
+#  AZURE_STORAGE_CONNECTION_STRING
+#    Connection string for the Storage Account that hosts the static website.
+#    Get it with:
+#      az storage account show-connection-string \
+#        --name <your-storage-account-name> \
+#        --resource-group <your-resource-group> \
+#        --query connectionString -o tsv
 #
 #  Optional GitHub secret
 #  ──────────────────────
 #  VITE_APPLICATIONINSIGHTS_CONNECTION_STRING
-#    – Application Insights connection string baked into the frontend
-#      build.  Leave the secret blank (or omit it) to disable telemetry.
-#
-#  How pull-request previews work
-#  ───────────────────────────────
-#  Azure Static Web Apps automatically creates a temporary staging
-#  environment for each pull request.  A URL is posted as a PR comment
-#  so you can test changes before they reach main.  When the PR is
-#  closed or merged the staging environment is deleted automatically
-#  by the close_pull_request job below.
+#    Application Insights connection string baked into the frontend
+#    bundle at build time. Leave blank to disable frontend telemetry.
 # ============================================================
 
-name: Azure Static Web Apps CI/CD
+name: Azure Storage Website + Function App CI/CD
 
 on:
-  # Deploy to production when code lands on main.
   push:
     branches:
       - main
 
-  # Build a preview environment for every pull request targeting main.
-  # The 'closed' type is needed so we can clean up the preview when the
-  # PR is merged or closed.
   pull_request:
-    types: [opened, synchronize, reopened, closed]
     branches:
       - main
 
-jobs:
-  # ── Job 1: Build and deploy ───────────────────────────────────────────────────
-  #
-  # Runs for:
-  #   • every push to main            → deploys to the production environment
-  #   • every open / updated PR       → deploys to a named staging environment
-  #
-  # Skipped when a PR is closed (the close_pull_request job handles that).
-  build_and_deploy:
-    if: >
-      github.event_name == 'push' ||
-      (github.event_name == 'pull_request' && github.event.action != 'closed')
+  workflow_dispatch:
 
+jobs:
+  build_validation:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    name: Build and Deploy
+    name: Build Validation
 
     steps:
-      # 1. Check out the repository so the build steps can see the source code.
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Install the Node.js version we use for local development.
-      #    The cache key is based on both lock files so the cache is invalidated
-      #    only when dependencies actually change.
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: |
             frontend/package-lock.json
             api/package-lock.json
 
-      # 3. Install frontend dependencies and run the Vite production build.
-      #
-      #    VITE_APPLICATIONINSIGHTS_CONNECTION_STRING is baked into the bundle
-      #    at build time by Vite.  When the secret is blank (default for new
-      #    repos) the telemetry helper silently disables itself – no errors.
       - name: Install and build frontend
         working-directory: frontend
         run: |
@@ -93,50 +73,59 @@ jobs:
         env:
           VITE_APPLICATIONINSIGHTS_CONNECTION_STRING: ${{ secrets.VITE_APPLICATIONINSIGHTS_CONNECTION_STRING }}
 
-      # 4. Install API dependencies and compile TypeScript.
-      #    This produces api/dist/ which is what Azure Functions runs.
       - name: Install and build API
         working-directory: api
         run: |
           npm ci
           npm run build
 
-      # 5. Upload the pre-built frontend and API to Azure Static Web Apps.
-      #
-      #    Key inputs explained:
-      #      app_location   – directory containing the built static files
-      #      api_location   – directory containing the Azure Functions source
-      #                       (including the compiled dist/ subfolder)
-      #      output_location – empty because app_location already IS the output
-      #      skip_app_build  – true because we built the frontend in step 3
-      #      skip_api_build  – true because we compiled TypeScript in step 4
-      #      repo_token      – lets the action post a preview URL as a PR comment
-      - name: Deploy to Azure Static Web Apps
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: ${{ secrets.SWA_DEPLOYMENT_TOKEN }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          action: upload
-          app_location: frontend/dist
-          api_location: api
-          output_location: ''
-          skip_app_build: true
-          skip_api_build: true
-
-  # ── Job 2: Clean up pull-request staging environment ─────────────────────────
-  #
-  # Runs only when a pull request is closed or merged.
-  # Tells Azure to delete the staging environment that was created for the PR.
-  close_pull_request:
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
-
+  build_and_deploy:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    name: Close Pull Request Environment
+    name: Build and Deploy Production
 
     steps:
-      - name: Remove staging environment
-        uses: Azure/static-web-apps-deploy@v1
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
         with:
-          azure_static_web_apps_api_token: ${{ secrets.SWA_DEPLOYMENT_TOKEN }}
-          action: close
-          app_location: /
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            api/package-lock.json
+
+      - name: Install and build API
+        working-directory: api
+        run: |
+          npm ci
+          npm run build
+
+      - name: Deploy API to Azure Function App
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ secrets.AZURE_FUNCTION_APP_NAME }}
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+          package: ./api
+          respect-funcignore: true
+
+      - name: Install and build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+        env:
+          VITE_API_BASE_URL: https://${{ secrets.AZURE_FUNCTION_APP_NAME }}.azurewebsites.net/api
+          VITE_APPLICATIONINSIGHTS_CONNECTION_STRING: ${{ secrets.VITE_APPLICATIONINSIGHTS_CONNECTION_STRING }}
+
+      - name: Upload frontend to Storage Static Website
+        env:
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+        run: |
+          az storage blob upload-batch \
+            --connection-string "$AZURE_STORAGE_CONNECTION_STRING" \
+            --destination '$web' \
+            --source frontend/dist \
+            --overwrite
